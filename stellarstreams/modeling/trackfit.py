@@ -7,13 +7,14 @@ from astropy.table import Table
 import astropy.units as u
 import numpy as np
 
+import gala.dynamics as gd
 from gala.dynamics.mockstream import fardal_stream
 from gala.integrate.timespec import parse_time_specification
 import gala.potential as gp
 from gala.units import galactic
 
 # Project
-from .stats import ln_normal, ln_normal_ivar
+from .stats import ln_normal, ln_normal_ivar, get_ivar
 from .track import get_stream_track
 
 __all__ = ['MockStreamModel']
@@ -99,6 +100,7 @@ class MockStreamModel:
     def __init__(self, data, stream_frame,
                  integrate_kw,
                  potential, potential_lnprior=None,
+                 frozen=None,
                  mockstream_fn=fardal_stream, mockstream_kw=None,
                  galcen_frame=None,
                  phi1_0=0*u.deg,
@@ -148,12 +150,14 @@ class MockStreamModel:
                              'gala.integrate.parse_time_specification'
                              .format(integrate_kw))
 
-        # TODO: deal with potential / ln_prior
         # Validate specification of the potential and integration parameters
         if not (issubclass(potential, gp.PotentialBase) or
                 isinstance(potential, gp.PotentialBase)):
             raise TypeError('Invalid potential object: must either be a gala '
                             'potential class instance, or the class itself.')
+        self.potential = potential
+        self._potential_cls = potential.__class__
+        # TODO: deal with potential_lnprior
 
         if galcen_frame is None:
             galcen_frame = coord.Galactocentric()
@@ -164,10 +168,17 @@ class MockStreamModel:
         self.phi1_lim = phi1_lim
         self.phi1_binsize = phi1_binsize
 
-        # TODO: some validation of the mockstream arguments
+        # Mock-stream generation function:
+        self.mockstream_fn = mockstream_fn
+
+        # TODO: some validation of the mockstream arguments?
         if mockstream_kw is None:
             mockstream_kw = dict()
-        mockstream_kw = dict()
+        self.mockstream_kw = mockstream_kw
+
+        # Frozen parameters:
+        if frozen is None:
+            frozen = dict()
 
         # Compile parameter names: progenitor initial conditions
         self.param_names = ['{}_0' for x in self._frame_comp_names[1:]]
@@ -188,7 +199,7 @@ class MockStreamModel:
                                  "it isn't frozen either!".format(k))
             vals.append(val)
 
-        if self.frozen['potential'] is True: # all potential params frozen
+        if self.frozen.get('potential', False) is True: # potential params
             pot_vals = []
 
         else: # no potential parameters are frozen
@@ -210,7 +221,7 @@ class MockStreamModel:
                 pars[name] = x[j]
                 j += 1
 
-        if self.frozen['potential'] is True: # all potential params frozen
+        if self.frozen.get('potential', False) is True: # potential params
             pot_pars = dict()
 
         else:
@@ -220,61 +231,57 @@ class MockStreamModel:
 
         return pars
 
-    def get_w0(self, p):
-        phi2, d, pm1, pm2, rv, lnM, c = p
-        c = self.stream_frame.__class__(phi1=self.phi1_0,
-                                        phi2=phi2*u.deg,
-                                        distance=d*u.kpc,
-                                        pm_phi1_cosphi2=pm1*u.mas/u.yr,
-                                        pm_phi2=pm2*u.mas/u.yr,
-                                        radial_velocity=rv*u.km/u.s,
-                                        **self.stream_frame.frame_attributes)
+    # Helper / convenience methods:
+    def get_w0(self, phi2, distance, pm_phi1_cosphi2, pm_phi2,
+               radial_velocity, **_):
+        # TODO: make units configurable
+        c = self._frame_cls(phi1=self.phi1_0,
+                            phi2=phi2*u.deg,
+                            distance=distance*u.kpc,
+                            pm_phi1_cosphi2=pm_phi1_cosphi2*u.mas/u.yr,
+                            pm_phi2=pm_phi2*u.mas/u.yr,
+                            radial_velocity=radial_velocity*u.km/u.s,
+                            **self._frame_attrs)
         w0 = gd.PhaseSpacePosition(c.transform_to(self.galcen_frame).data)
         return w0
 
-    def get_orbit(self, p):
-        M = np.exp(p[-2]) * u.Msun
-        c = p[-1]
+    def get_hamiltonian(self, **potential_params):
+        pot = self._potential_cls(units=self.potential.units,
+                                  **potential_params)
+        return gp.Hamiltonian(pot)
 
-        ham = gp.Hamiltonian(gp.MilkyWayPotential(halo=dict(m=M, a=1., b=1., c=c)))
-
-        c = self.get_w0(p)
-
+    def get_orbit(self, ham, w0):
         try:
-            orbit = ham.integrate_orbit(w0, dt=-np.abs(self.dt),
-                                        n_steps=self.n_steps)[::-1]
+            orbit = ham.integrate_orbit(w0, dt=self.dt,
+                                        n_steps=self.n_steps)
         except:
             return None
 
-        return orbit, ham
+        return orbit
 
-    def get_mockstream(self, p):
-        orbit, ham = self.get_orbit(p)
-
+    def get_mockstream(self, ham, orbit):
         if orbit is None:
             return None
 
         # TODO: vary mass-loss!
-        n_times = len(orbit.t)
-        prog_mass = np.linspace(5e4, 1e0, n_times) * u.Msun
-        prog_mass[-300:] = 1e0 * u.Msun
+        # n_times = len(orbit.t)
+        # prog_mass = np.linspace(5e4, 1e0, n_times) * u.Msun
+        # prog_mass[-300:] = 1e0 * u.Msun
 
         try:
-            stream = mockstream.dissolved_fardal_stream(ham, orbit, prog_mass,
-                                                        t_disrupt=0*u.Gyr,
-                                                        release_every=self.release_every,
-                                                        seed=42)
+            stream = self.mockstream_fn(ham, orbit, **self.mockstream_kw)
         except TypeError:
             return None
 
         return stream
 
     def tracks_ln_likelihood(self, stream):
-        tracks = get_stream_track(stream.to_coord_frame(self.stream_frame,
-                                                        galactocentric_frame=self.galcen_frame),
-                                  stream.to_coord_frame(coord.ICRS,
-                                                        galactocentric_frame=self.galcen_frame),
-                                  phi1_lim=self.phi1_lim,
+        stream_c = stream.to_coord_frame(
+            self.stream_frame, galactocentric_frame=self.galcen_frame)
+        stream_icrs = stream.to_coord_frame(
+            coord.ICRS, galactocentric_frame=self.galcen_frame)
+
+        tracks = get_stream_track(stream_c, stream_icrs, phi1_lim=self.phi1_lim,
                                   phi1_binsize=self.phi1_binsize)
 
         # _grid = np.linspace(-100, 20, 1024)
@@ -283,7 +290,7 @@ class MockStreamModel:
         #     plt.scatter(data['phi1'], data[k], zorder=-100)
         #     plt.plot(_grid, tracks[k](_grid), marker='')
 
-        # TODO:
+        # TODO: make this an init argument
         extra_var = dict()
         extra_var['phi2'] = 0.1 ** 2
         extra_var['distmod'] = 0.02 ** 2
@@ -293,9 +300,9 @@ class MockStreamModel:
 
         lls = []
         for name in ['phi2', 'distmod', 'pmra', 'pmdec', 'rv']:
-            ll = ln_normal_ivar(tracks[name](data['phi1']),
-                                data[name],
-                                get_ivar(data[name+'_ivar'], extra_var[name]))
+            ivar = get_ivar(self.data[name+'_ivar'], extra_var[name])
+            ll = ln_normal_ivar(tracks[name](self.data['phi1']),
+                                self.data[name], ivar)
             lls.append(ll[np.isfinite(ll)].sum())
 
         return np.sum(lls)
@@ -303,14 +310,26 @@ class MockStreamModel:
     def ln_likelihood(self, p):
         # TODO: vary potential?
         # ham = self.ham
-        stream = self.get_mockstream(p)
+        pars = self.unpack_pars(p)
+        ham = self.get_hamiltonian(**pars['potential'])
+        w0 = self.get_w0(**pars)
 
+        orbit = self.get_orbit(ham, w0)
+        if orbit is None:
+            return -np.inf
+
+        if orbit.t[-1] < orbit.t[0]:
+            orbit = orbit[::-1]
+
+        stream = self.get_mockstream(ham, orbit)
         if stream is None:
             return -np.inf
 
         return self.tracks_ln_likelihood(stream)
 
     def ln_prior(self, p):
+        # TODO: allow customizing priors for each component
+        # TODO: evaluate potential prior as well
         phi2, d, pm1, pm2, rv, lnM, c = p
 
         lp = 0.
@@ -321,9 +340,6 @@ class MockStreamModel:
         lp += ln_normal(pm1, 0, 50.)
         lp += ln_normal(pm2, 0, 50.)
         lp += ln_normal(rv, 0, 400.)
-
-        lp += ln_normal(lnM, 27., 0.5)
-        lp += ln_normal(c, 1, 0.2)
 
         return lp
 

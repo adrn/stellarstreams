@@ -9,8 +9,8 @@ from ..trackfit import (_pack_potential_pars, _unpack_potential_pars,
 
 def test_potential_pack():
     pot1 = gp.HernquistPotential(m=1e5*u.Msun,
-                                c=4.23,
-                                units=galactic)
+                                 c=4.23,
+                                 units=galactic)
     frozen1 = {'c': 1.}
     p1 = [1e6]
 
