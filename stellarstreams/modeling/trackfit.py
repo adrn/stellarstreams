@@ -3,7 +3,7 @@ from inspect import getfullargspec
 
 # Third-party
 import astropy.coordinates as coord
-from astropy.table import Table
+from astropy.table import Table, QTable
 import astropy.units as u
 import numpy as np
 
@@ -91,7 +91,7 @@ class MockStreamModel:
 
     Parameters
     ----------
-    data : `~astropy.table.Table`, `dict`, or similar
+    data : `~astropy.table.QTable`, `dict`, or similar
     stream_frame : `~astropy.coordinates.BaseCoordinateFrame` subclass instance
     potential : `~gala.potential.PotentialBase` subclass instance
     """
@@ -122,16 +122,27 @@ class MockStreamModel:
         self._frame_attrs = stream_frame.frame_attributes
 
         # Validate the input data
-        self.data = Table(data)
-
+        self.data = QTable(data, copy=False) # maintain the original data
+        self._data = Table() # a copy with units stripped
+        self._data_units = dict()
         self._has_data = dict()
-        for name in self._frame_comp_names:
+        for i, name in enumerate(self._frame_comp_names):
             self._has_data[name] = name in self.data.colnames
-            if self._has_data[name] and name+'_ivar' not in self.data.colnames:
+            if (self._has_data[name] and i > 0 and
+                    name+'_ivar' not in self.data.colnames):
                 raise ValueError("If passing in data for component '{0}', you "
                                  "must also pass in an inverse-variance with "
                                  "name '{0}_ivar' in the input data table"
                                  .format(name))
+
+            if self._has_data[name]:
+                self._data_units[name] = self.data[name].unit
+                self._data[name] = self.data[name].value
+
+                if i > 0: # skip phi1 or longitude
+                    ivar_unit = 1 / self._data_units[name]**2
+                    self._data[name+'_ivar'] = \
+                        self.data[name+'_ivar'].to_value(ivar_unit)
 
         # Validate integrate_kw arguments
         valid_integrate_args = getfullargspec(parse_time_specification).args
@@ -151,10 +162,9 @@ class MockStreamModel:
                              .format(integrate_kw))
 
         # Validate specification of the potential and integration parameters
-        if not (issubclass(potential, gp.PotentialBase) or
-                isinstance(potential, gp.PotentialBase)):
-            raise TypeError('Invalid potential object: must either be a gala '
-                            'potential class instance, or the class itself.')
+        if not isinstance(potential, gp.PotentialBase):
+            raise TypeError('Invalid potential object: must be a gala '
+                            'potential class instance.')
         self.potential = potential
         self._potential_cls = potential.__class__
         # TODO: deal with potential_lnprior
@@ -179,25 +189,31 @@ class MockStreamModel:
         # Frozen parameters:
         if frozen is None:
             frozen = dict()
+        self.frozen = frozen
 
         # Compile parameter names: progenitor initial conditions
-        self.param_names = ['{}_0' for x in self._frame_comp_names[1:]]
+        self.param_names = dict()
+        self.param_names['w0'] = self._frame_comp_names[1:]
 
     def pack_pars(self, p, fill_frozen=True):
         vals = []
-        for k in self.param_names:
-            if k in self.frozen:
-                val = self.frozen.get(k, None)
-                if not fill_frozen:
-                    continue
 
-            else:
-                val = p.get(k, None)
+        if not self.frozen.get('w0', False): # initial conditions
+            frozen_w0 = self.frozen.get('w0', dict())
+            p_w0 = p.get('w0', dict())
+            for k in self.param_names['w0']:
+                if k in frozen_w0:
+                    val = frozen_w0.get(k, None)
+                    if not fill_frozen:
+                        continue
 
-            if val is None:
-                raise ValueError("No value passed in for parameter {0}, but "
-                                 "it isn't frozen either!".format(k))
-            vals.append(val)
+                else:
+                    val = p_w0.get(k, None)
+
+                if val is None:
+                    raise ValueError("No value passed in for parameter {0}, "
+                                     "but it isn't frozen either!".format(k))
+                vals.append(val)
 
         if self.frozen.get('potential', False) is True: # potential params
             pot_vals = []
@@ -214,12 +230,17 @@ class MockStreamModel:
         pars = dict()
 
         j = 0
-        for name in self.param_names:
-            if name in self.frozen:
-                pars[name] = self.frozen[name]
-            else:
-                pars[name] = x[j]
-                j += 1
+
+        w0_pars = dict()
+        if not self.frozen.get('w0', False): # initial conditions
+            frozen_w0 = self.frozen.get('w0', dict())
+            for name in self.param_names['w0']:
+                if name in frozen_w0:
+                    w0_pars[name] = self.frozen[name]
+                else:
+                    w0_pars[name] = x[j]
+                    j += 1
+        pars['w0'] = w0_pars
 
         if self.frozen.get('potential', False) is True: # potential params
             pot_pars = dict()
@@ -232,16 +253,14 @@ class MockStreamModel:
         return pars
 
     # Helper / convenience methods:
-    def get_w0(self, phi2, distance, pm_phi1_cosphi2, pm_phi2,
-               radial_velocity, **_):
-        # TODO: make units configurable
-        c = self._frame_cls(phi1=self.phi1_0,
-                            phi2=phi2*u.deg,
-                            distance=distance*u.kpc,
-                            pm_phi1_cosphi2=pm_phi1_cosphi2*u.mas/u.yr,
-                            pm_phi2=pm_phi2*u.mas/u.yr,
-                            radial_velocity=radial_velocity*u.km/u.s,
-                            **self._frame_attrs)
+    def get_w0(self, **kwargs):
+        # TODO: make units configurable - need to know units of each component
+        # in initializer, then add them back in here:
+        kw = dict()
+        for k, v in kwargs.items():
+            kw[k] = v * self._data_units[k]
+        kw.update(self._frame_attrs)
+        c = self._frame_cls(**kw)
         w0 = gd.PhaseSpacePosition(c.transform_to(self.galcen_frame).data)
         return w0
 
@@ -262,11 +281,6 @@ class MockStreamModel:
     def get_mockstream(self, ham, orbit):
         if orbit is None:
             return None
-
-        # TODO: vary mass-loss!
-        # n_times = len(orbit.t)
-        # prog_mass = np.linspace(5e4, 1e0, n_times) * u.Msun
-        # prog_mass[-300:] = 1e0 * u.Msun
 
         try:
             stream = self.mockstream_fn(ham, orbit, **self.mockstream_kw)
