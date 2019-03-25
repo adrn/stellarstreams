@@ -122,6 +122,7 @@ class MockStreamModel:
         self._frame_attrs = stream_frame.frame_attributes
 
         # Validate the input data
+        # TODO: this is broken for distance/distmod...!
         self.data = QTable(data, copy=False) # maintain the original data
         self._data = Table() # a copy with units stripped
         self._data_units = dict()
@@ -160,6 +161,7 @@ class MockStreamModel:
                              'required by '
                              'gala.integrate.parse_time_specification'
                              .format(integrate_kw))
+        self.integrate_kw = integrate_kw
 
         # Validate specification of the potential and integration parameters
         if not isinstance(potential, gp.PotentialBase):
@@ -167,7 +169,7 @@ class MockStreamModel:
                             'potential class instance.')
         self.potential = potential
         self._potential_cls = potential.__class__
-        # TODO: deal with potential_lnprior
+        self.potential_lnprior = potential_lnprior
 
         if galcen_frame is None:
             galcen_frame = coord.Galactocentric()
@@ -254,12 +256,13 @@ class MockStreamModel:
 
     # Helper / convenience methods:
     def get_w0(self, **kwargs):
-        # TODO: make units configurable - need to know units of each component
-        # in initializer, then add them back in here:
         kw = dict()
+        kw['phi1'] = self.phi1_0
+
         for k, v in kwargs.items():
-            kw[k] = v * self._data_units[k]
+            kw[k] = v * self._data_units[k] # TODO: distance vs. distmod issues
         kw.update(self._frame_attrs)
+
         c = self._frame_cls(**kw)
         w0 = gd.PhaseSpacePosition(c.transform_to(self.galcen_frame).data)
         return w0
@@ -271,8 +274,7 @@ class MockStreamModel:
 
     def get_orbit(self, ham, w0):
         try:
-            orbit = ham.integrate_orbit(w0, dt=self.dt,
-                                        n_steps=self.n_steps)
+            orbit = ham.integrate_orbit(w0, **self.integrate_kw)
         except:
             return None
 
@@ -292,77 +294,81 @@ class MockStreamModel:
     def tracks_ln_likelihood(self, stream):
         stream_c = stream.to_coord_frame(
             self.stream_frame, galactocentric_frame=self.galcen_frame)
-        stream_icrs = stream.to_coord_frame(
-            coord.ICRS, galactocentric_frame=self.galcen_frame)
 
-        tracks = get_stream_track(stream_c, stream_icrs, phi1_lim=self.phi1_lim,
-                                  phi1_binsize=self.phi1_binsize)
-
-        # _grid = np.linspace(-100, 20, 1024)
-        # for k in tracks:
-        #     plt.figure(figsize=(10, 5))
-        #     plt.scatter(data['phi1'], data[k], zorder=-100)
-        #     plt.plot(_grid, tracks[k](_grid), marker='')
-
-        # TODO: make this an init argument
-        extra_var = dict()
-        extra_var['phi2'] = 0.1 ** 2
-        extra_var['distmod'] = 0.02 ** 2
-        extra_var['pmra'] = 0.1 ** 2
-        extra_var['pmdec'] = 0.1 ** 2
-        extra_var['rv'] = 5. ** 2
+        mean_tracks, std_tracks = get_stream_track(
+            stream_c, phi1_lim=self.phi1_lim, phi1_binsize=self.phi1_binsize,
+            units=self._data_units)
 
         lls = []
-        for name in ['phi2', 'distmod', 'pmra', 'pmdec', 'rv']:
-            ivar = get_ivar(self.data[name+'_ivar'], extra_var[name])
-            ll = ln_normal_ivar(tracks[name](self.data['phi1']),
-                                self.data[name], ivar)
+        for name in self._frame_comp_names[1:]: # skip phi1
+            ivar = get_ivar(self._data[name+'_ivar'],
+                            std_tracks[name](self._data['phi1'])**2)
+            ll = ln_normal_ivar(mean_tracks[name](self._data['phi1']),
+                                self._data[name], ivar)
             lls.append(ll[np.isfinite(ll)].sum())
 
         return np.sum(lls)
 
-    def ln_likelihood(self, p):
-        # TODO: vary potential?
-        # ham = self.ham
-        pars = self.unpack_pars(p)
-        ham = self.get_hamiltonian(**pars['potential'])
-        w0 = self.get_w0(**pars)
+    def ln_likelihood(self, pars):
+        w0 = self.get_w0(**pars['w0'])
+        H = self.get_hamiltonian(**pars['potential'])
 
-        orbit = self.get_orbit(ham, w0)
+        orbit = self.get_orbit(H, w0)
         if orbit is None:
             return -np.inf
 
         if orbit.t[-1] < orbit.t[0]:
             orbit = orbit[::-1]
 
-        stream = self.get_mockstream(ham, orbit)
+        stream = self.get_mockstream(H, orbit)
         if stream is None:
             return -np.inf
 
         return self.tracks_ln_likelihood(stream)
 
-    def ln_prior(self, p):
-        # TODO: allow customizing priors for each component
-        # TODO: evaluate potential prior as well
-        phi2, d, pm1, pm2, rv, lnM, c = p
-
+    def default_w0_ln_prior(self, **kw):
         lp = 0.
 
-        # TODO HACK: hard-coded
-        lp += ln_normal(phi2, 0., 3.)
-        lp += ln_normal(d, 8., 4.)
-        lp += ln_normal(pm1, 0, 50.)
-        lp += ln_normal(pm2, 0, 50.)
-        lp += ln_normal(rv, 0, 400.)
+        # TODO: hack - names assumed below
+
+        # gaussian in phi2
+        val = (kw['phi2']*self._data_units['phi2']).to_value(u.deg)
+        lp += ln_normal(val, 0., 5.) # MAGIC NUMBER
+
+        # uniform space density:
+        val = (kw['distance']*self._data_units['distance']).to_value(u.kpc)
+        lp += np.log(3) - np.log(1-100**3) - 2 * np.log(val) # MAGIC NUMBERs
+
+        # gentle gaussian priors in proper motion
+        val = (kw['pm_phi1_cosphi2']*self._data_units['pm_phi1_cosphi2']).to_value(u.mas/u.yr)
+        lp += ln_normal(val, 0, 25)
+        val = (kw['pm_phi2']*self._data_units['pm_phi2']).to_value(u.mas/u.yr)
+        lp += ln_normal(val, 0, 25)
+
+        # wide gaussian prior on RV
+        val = (kw['radial_velocity']*self._data_units['radial_velocity']).to_value(u.km/u.s)
+        lp += ln_normal(val, 0, 350)
+
+        return lp
+
+    def ln_prior(self, pars):
+        lp = 0.
+
+        lp += self.default_w0_ln_prior(**pars['w0'])
+
+        if self.potential_lnprior is not None:
+            lp += self.potential_lnprior(**pars['potential'])
 
         return lp
 
     def ln_posterior(self, p):
-        lp = self.ln_prior(p)
+        pars = self.unpack_pars(p)
+
+        lp = self.ln_prior(pars)
         if not np.all(np.isfinite(lp)):
             return -np.inf
 
-        ll = self.ln_likelihood(p)
+        ll = self.ln_likelihood(pars)
         if not np.all(np.isfinite(ll)):
             return -np.inf
 
