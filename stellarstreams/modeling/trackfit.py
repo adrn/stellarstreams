@@ -270,8 +270,10 @@ class MockStreamModel:
         return w0
 
     def get_hamiltonian(self, **potential_params):
-        pot = self._potential_cls(units=self.potential.units,
-                                  **potential_params)
+        pars = dict()
+        for k in self.potential.parameters:
+            pars[k] = potential_params.get(k, self.potential.parameters[k])
+        pot = self._potential_cls(units=self.potential.units, **pars)
         return gp.Hamiltonian(pot)
 
     def get_orbit(self, ham, w0):
