@@ -1,5 +1,5 @@
 # Built in
-from inspect import getfullargspec
+from inspect import getfullargspec, isclass
 
 # Third-party
 import astropy.coordinates as coord
@@ -107,12 +107,14 @@ class MockStreamModel:
                  phi1_lim=[-180, 180]*u.deg, phi1_binsize=1*u.deg):
 
         # Coordinate frame of the stream data
-        if not (issubclass(stream_frame, coord.BaseCoordinateFrame) or
+        if not ((isclass(stream_frame) and
+                 issubclass(stream_frame, coord.BaseCoordinateFrame)) or
                 isinstance(stream_frame, coord.BaseCoordinateFrame)):
             raise TypeError('Invalid stream frame: must either be an astropy '
                             'frame class instance, or the class itself.')
 
-        if issubclass(stream_frame, coord.BaseCoordinateFrame):
+        if (isclass(stream_frame) and
+                issubclass(stream_frame, coord.BaseCoordinateFrame)):
             stream_frame = stream_frame()
         self.stream_frame = stream_frame
         self._frame_cls = stream_frame.__class__
