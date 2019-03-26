@@ -339,9 +339,10 @@ class MockStreamModel:
         val = (kw['phi2']*self._data_units['phi2']).to_value(u.deg)
         lp += ln_normal(val, 0., 5.) # MAGIC NUMBER
 
-        # uniform space density:
+        # uniform space density from 1 to 100 kpc:
+        a, b = 1, 100
         val = (kw['distance']*self._data_units['distance']).to_value(u.kpc)
-        lp += np.log(3) - np.log(1-100**3) - 2 * np.log(val) # MAGIC NUMBERs
+        lp += np.log(a) + np.log(b) - np.log(b-a) - 2 * np.log(val) # MAGIC NUMBERs
 
         # gentle gaussian priors in proper motion
         val = (kw['pm_phi1_cosphi2']*self._data_units['pm_phi1_cosphi2']).to_value(u.mas/u.yr)
