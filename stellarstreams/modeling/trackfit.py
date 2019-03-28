@@ -1,5 +1,6 @@
 # Built in
 from inspect import getfullargspec, isclass
+import copy
 
 # Third-party
 import astropy.coordinates as coord
@@ -19,71 +20,7 @@ from .track import get_stream_track
 
 __all__ = ['MockStreamModel']
 
-
-# TODO: should be able to do frozen=dict(potential=True) and have it auto-fill the values from the potential instance passed in
-def _unpack_potential_pars(potential, p, frozen):
-    j = 0
-    all_key_vals = dict()
-    if isinstance(potential, gp.CompositePotential):
-        # Have to deal with the fact that there are multiple potential keys
-        for k in sorted(potential.keys()):
-            this_frozen = frozen[k]
-            key_vals = []
-            for name in sorted(potential[k].parameters.keys()):
-                if name in this_frozen:
-                    key_vals.append((name, this_frozen[name]))
-                else:
-                    key_vals.append((name, p[j]))
-                    j += 1
-            all_key_vals[k] = dict(key_vals)
-
-    else:
-        for name in sorted(potential.parameters.keys()):
-            if name in frozen:
-                all_key_vals[name] = frozen[name]
-            else:
-                all_key_vals[name] = p[j]
-                j += 1
-
-    return all_key_vals, j
-
-
-def _pack_potential_pars(potential, pars, frozen, fill_frozen=False):
-    vals = []
-    if isinstance(potential, gp.CompositePotential):
-        # Have to deal with the fact that there are multiple potential keys
-        for k in sorted(potential.keys()):
-            this_frozen = frozen[k]
-            for name in sorted(potential[k].parameters.keys()):
-                if name in this_frozen:
-                    val = this_frozen.get(name, None)
-                    if not fill_frozen:
-                        continue
-                else:
-                    val = pars[k].get(name, None)
-
-                if val is None:
-                    raise ValueError("No value passed in for parameter {0}, but "
-                                     "it isn't frozen either!".format(k))
-
-                vals.append(val)
-
-    else:
-        for name in sorted(potential.parameters.keys()):
-            if name in frozen:
-                val = frozen.get(name, None)
-                if not fill_frozen:
-                    continue
-            else:
-                val = pars.get(name, None)
-
-            if val is None:
-                raise ValueError("No value passed in for parameter {0}, but "
-                                 "it isn't frozen either!".format(k))
-
-            vals.append(val)
-
-    return np.array(vals)
+# TODO: add potential_transform and inv_transform methods on MockStreamModel that get called in pack/unpack
 
 
 class MockStreamModel:
@@ -95,11 +32,20 @@ class MockStreamModel:
     stream_frame : `~astropy.coordinates.BaseCoordinateFrame` subclass instance
     potential : `~gala.potential.PotentialBase` subclass instance
     """
+    potential_cls = None
+    potential_units = None
+
+    def __init_subclass__(cls, **kwargs):
+        for required in ('potential_cls', 'potential_units'):
+            if not getattr(cls, required):
+                raise TypeError("Can't instantiate class {cls.__name__} "
+                                "without {required} attribute defined"
+                                .format(cls=cls, required=required))
+        return super().__init_subclass__(**kwargs)
 
     @u.quantity_input(phi1_0=u.deg, phi1_lim=u.deg, phi1_binsize=u.deg)
     def __init__(self, data, stream_frame,
                  integrate_kw,
-                 potential, potential_lnprior=None,
                  frozen=None,
                  mockstream_fn=fardal_stream, mockstream_kw=None,
                  galcen_frame=None,
@@ -165,14 +111,6 @@ class MockStreamModel:
                              .format(integrate_kw))
         self.integrate_kw = integrate_kw
 
-        # Validate specification of the potential and integration parameters
-        if not isinstance(potential, gp.PotentialBase):
-            raise TypeError('Invalid potential object: must be a gala '
-                            'potential class instance.')
-        self.potential = potential
-        self._potential_cls = potential.__class__
-        self.potential_lnprior = potential_lnprior
-
         if galcen_frame is None:
             galcen_frame = coord.Galactocentric()
         self.galcen_frame = galcen_frame
@@ -199,6 +137,58 @@ class MockStreamModel:
         self.param_names = dict()
         self.param_names['w0'] = self._frame_comp_names[1:]
 
+    def _unpack_potential_pars(self, potential_cls, p, frozen,
+                               fill_frozen=False):
+        j = 0
+        all_key_vals = dict()
+
+        if isinstance(potential_cls, dict):
+            for k in sorted(potential_cls.keys()):
+                this_key_vals, this_j = self._unpack_potential_pars(
+                    potential_cls[k], p[j:], frozen[k], fill_frozen)
+                all_key_vals[k] = this_key_vals
+                j += this_j
+
+        else:
+            for name in sorted(potential_cls._physical_types.keys()):
+                if name in frozen:
+                    if fill_frozen:
+                        all_key_vals[name] = frozen[name]
+                else:
+                    all_key_vals[name] = p[j]
+                    j += 1
+
+        return all_key_vals, j
+
+    def _pack_potential_pars(self, potential_cls, pars, frozen,
+                             fill_frozen=False):
+        vals = []
+
+        if isinstance(potential_cls, dict):
+            for k in sorted(potential_cls.keys()):
+                this_vals = self._pack_potential_pars(potential_cls[k],
+                                                      pars[k],
+                                                      frozen[k],
+                                                      fill_frozen=fill_frozen)
+                vals = np.concatenate((vals, this_vals))
+
+        else:
+            for name in sorted(potential_cls._physical_types.keys()):
+                if name in frozen:
+                    val = frozen.get(name, None)
+                    if not fill_frozen:
+                        continue
+                else:
+                    val = pars.get(name, None)
+
+                if val is None:
+                    raise ValueError("No value passed in for parameter {0}, "
+                                     "but it isn't frozen either!".format(k))
+
+                vals.append(val)
+
+        return np.array(vals)
+
     def pack_pars(self, p, fill_frozen=True):
         vals = []
 
@@ -223,14 +213,16 @@ class MockStreamModel:
             pot_vals = []
 
         else: # no potential parameters are frozen
-            pot_vals = _pack_potential_pars(potential=self.potential,
-                                            pars=p['potential'],
-                                            frozen=self.frozen['potential'],
-                                            fill_frozen=fill_frozen)
+            pot_pars = copy.deepcopy(p['potential'])
+            self.potential_transform(pot_pars)
+            pot_vals = self._pack_potential_pars(self.potential_cls,
+                                                 pot_pars,
+                                                 self.frozen['potential'],
+                                                 fill_frozen=fill_frozen)
 
         return np.concatenate((vals, pot_vals))
 
-    def unpack_pars(self, x):
+    def unpack_pars(self, x, fill_frozen=True):
         pars = dict()
 
         j = 0
@@ -240,7 +232,8 @@ class MockStreamModel:
             frozen_w0 = self.frozen.get('w0', dict())
             for name in self.param_names['w0']:
                 if name in frozen_w0:
-                    w0_pars[name] = self.frozen[name]
+                    if fill_frozen:
+                        w0_pars[name] = self.frozen[name]
                 else:
                     w0_pars[name] = x[j]
                     j += 1
@@ -250,8 +243,14 @@ class MockStreamModel:
             pot_pars = dict()
 
         else:
-            pot_pars, j = _unpack_potential_pars(self.potential, x[j:],
-                                                 self.frozen['potential'])
+            pot_pars, j = self._unpack_potential_pars(self.potential_cls,
+                                                      x[j:],
+                                                      self.frozen['potential'],
+                                                      fill_frozen=fill_frozen)
+
+            pot_pars = copy.deepcopy(pot_pars) # to protect frozen dict
+            self.potential_transform_inv(pot_pars)
+
         pars['potential'] = pot_pars
 
         return pars
@@ -270,16 +269,21 @@ class MockStreamModel:
         return w0
 
     def get_hamiltonian(self, **potential_params):
-        pars = dict()
-        for k in self.potential.parameters:
-            pars[k] = potential_params.get(k, self.potential.parameters[k])
-        pot = self._potential_cls(units=self.potential.units, **pars)
+        if isinstance(self.potential_cls, dict):
+            pot = gp.CCompositePotential()
+            for k in self.potential_cls:
+                pot[k] = self.potential_cls[k](units=self.potential_units,
+                                               **potential_params[k])
+        else:
+            pot = self.potential_cls(units=self.potential_units,
+                                     **potential_params)
         return gp.Hamiltonian(pot)
 
     def get_orbit(self, ham, w0):
         try:
             orbit = ham.integrate_orbit(w0, **self.integrate_kw)
-        except:
+        except Exception as e:
+            print("Orbit integrate failed: {}".format(str(e)))
             return None
 
         return orbit
@@ -290,7 +294,8 @@ class MockStreamModel:
 
         try:
             stream = self.mockstream_fn(ham, orbit, **self.mockstream_kw)
-        except TypeError:
+        except TypeError as e:
+            print("Mock stream integrate failed: {}".format(str(e)))
             return None
 
         return stream
@@ -330,7 +335,7 @@ class MockStreamModel:
 
         return self.tracks_ln_likelihood(stream)
 
-    def default_w0_ln_prior(self, **kw):
+    def w0_ln_prior(self, kw):
         lp = 0.
 
         # TODO: hack - names assumed below
@@ -356,14 +361,13 @@ class MockStreamModel:
 
         return lp
 
+    def potential_lnprior(self, **_):
+        return 0.
+
     def ln_prior(self, pars):
         lp = 0.
-
-        lp += self.default_w0_ln_prior(**pars['w0'])
-
-        if self.potential_lnprior is not None:
-            lp += self.potential_lnprior(**pars['potential'])
-
+        lp += self.w0_ln_prior(pars['w0'])
+        lp += self.potential_ln_prior(pars['potential'])
         return lp
 
     def ln_posterior(self, p):
