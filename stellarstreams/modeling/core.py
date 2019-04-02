@@ -184,7 +184,7 @@ class BaseStreamModel:
         vals = []
 
         # Initial conditions
-        if not self.frozen.get('w0', False):
+        if self.frozen.get('w0', False) is not False:
             frozen_w0 = self.frozen.get('w0', dict())
             p_w0 = p.get('w0', dict())
             for k in self.param_names['w0']:
@@ -203,7 +203,7 @@ class BaseStreamModel:
 
         # Solar / LSR frame
         # TODO: bad code duplication here relative to the above
-        if not self.frozen.get('sun', False):
+        if self.frozen.get('sun', False) is not False:
             frozen_sun = self.frozen.get('sun', dict())
             p_sun = p.get('sun', dict())
             for k in self.param_names['sun']:
@@ -221,10 +221,7 @@ class BaseStreamModel:
                     vals.append(val)
 
         # Potential
-        if self.frozen.get('potential', False) is True: # potential params
-            pot_vals = []
-
-        else: # no potential parameters are frozen
+        if self.frozen.get('potential', False) is not False: # potential params
             pot_pars = copy.deepcopy(p['potential'])
             self.potential_transform(pot_pars)
             pot_vals = self._pack_potential_pars(self.potential_cls,
@@ -232,7 +229,9 @@ class BaseStreamModel:
                                                  self.frozen['potential'],
                                                  fill_frozen=fill_frozen)
 
-        return np.concatenate((vals, pot_vals))
+            vals = np.concatenate((vals, pot_vals))
+
+        return np.array(vals)
 
     def unpack_pars(self, x, fill_frozen=True):
         pars = dict()
