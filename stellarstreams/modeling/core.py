@@ -255,7 +255,7 @@ class BaseStreamModel:
             frozen_sun = self.frozen.get('sun', dict())
             for name in self.param_names['sun']:
                 if name in frozen_sun:
-                    if fill_frozen:
+                    if fill_frozen and name in self.frozen:
                         sun_pars[name] = self.frozen[name]
                 else:
                     sun_pars[name] = x[j]
