@@ -184,7 +184,7 @@ class BaseStreamModel:
         vals = []
 
         # Initial conditions
-        if self.frozen.get('w0', False) is not False:
+        if self.frozen.get('w0', False) is not True:
             frozen_w0 = self.frozen.get('w0', dict())
             p_w0 = p.get('w0', dict())
             for k in self.param_names['w0']:
@@ -203,7 +203,7 @@ class BaseStreamModel:
 
         # Solar / LSR frame
         # TODO: bad code duplication here relative to the above
-        if self.frozen.get('sun', False) is not False:
+        if self.frozen.get('sun', False) is not True:
             frozen_sun = self.frozen.get('sun', dict())
             p_sun = p.get('sun', dict())
             for k in self.param_names['sun']:
