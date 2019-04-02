@@ -338,32 +338,12 @@ class BaseStreamModel:
         pass
 
     def w0_ln_prior(self, kw):
-        lp = 0.
-
-        # TODO: hack - names assumed below
-
-        # gaussian in phi2
-        val = (kw['phi2']*self._data_units['phi2']).to_value(u.deg)
-        lp += ln_normal(val, 0., 5.) # MAGIC NUMBER
-
-        # uniform space density from 1 to 100 kpc:
-        a, b = 1, 100
-        val = (kw['distance']*self._data_units['distance']).to_value(u.kpc)
-        lp += np.log(a) + np.log(b) - np.log(b-a) - 2 * np.log(val) # MAGIC NUMBERs
-
-        # gentle gaussian priors in proper motion
-        val = (kw['pm_phi1_cosphi2']*self._data_units['pm_phi1_cosphi2']).to_value(u.mas/u.yr)
-        lp += ln_normal(val, 0, 25)
-        val = (kw['pm_phi2']*self._data_units['pm_phi2']).to_value(u.mas/u.yr)
-        lp += ln_normal(val, 0, 25)
-
-        # wide gaussian prior on RV
-        val = (kw['radial_velocity']*self._data_units['radial_velocity']).to_value(u.km/u.s)
-        lp += ln_normal(val, 0, 350)
-
-        return lp
+        return 0.
 
     def potential_ln_prior(self, *_, **__):
+        return 0.
+
+    def sun_ln_prior(self, *_, **_):
         return 0.
 
     # Compute log posterior probability of the model stream
@@ -371,6 +351,7 @@ class BaseStreamModel:
         lp = 0.
         lp += self.w0_ln_prior(pars['w0'])
         lp += self.potential_ln_prior(pars['potential'])
+        lp += self.sun_ln_prior(pars['sun'])
         return lp
 
     def ln_posterior(self, p):
