@@ -239,7 +239,7 @@ class BaseStreamModel:
         j = 0
 
         w0_pars = dict()
-        if not self.frozen.get('w0', False): # initial conditions
+        if self.frozen.get('w0', False) is not True: # initial conditions
             frozen_w0 = self.frozen.get('w0', dict())
             for name in self.param_names['w0']:
                 if name in frozen_w0:
@@ -251,7 +251,7 @@ class BaseStreamModel:
         pars['w0'] = w0_pars
 
         sun_pars = dict()
-        if not self.frozen.get('sun', False): # solar / LSR frame
+        if self.frozen.get('sun', False) is not True: # solar / LSR frame
             frozen_sun = self.frozen.get('sun', dict())
             for name in self.param_names['sun']:
                 if name in frozen_sun:
@@ -262,10 +262,8 @@ class BaseStreamModel:
                     j += 1
         pars['sun'] = sun_pars
 
-        if self.frozen.get('potential', False) is True: # potential params
-            pot_pars = dict()
-
-        else:
+        pot_pars = dict()
+        if self.frozen.get('potential', False) is not True: # potential params
             pot_pars, j = self._unpack_potential_pars(self.potential_cls,
                                                       x[j:],
                                                       self.frozen['potential'],
