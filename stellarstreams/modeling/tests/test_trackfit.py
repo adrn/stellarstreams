@@ -7,8 +7,7 @@ import gala.potential as gp
 from gala.units import galactic
 import numpy as np
 
-from ..trackfit import (_pack_potential_pars, _unpack_potential_pars,
-                        MockStreamModel)
+from ..trackfit import BaseMockStreamModel
 
 def get_fake_data(w0, H, fr, size=1):
     data = Table()
@@ -39,35 +38,35 @@ def get_fake_data(w0, H, fr, size=1):
     return data
 
 
-def test_potential_pack():
-    pot1 = gp.HernquistPotential(m=1e5*u.Msun,
-                                 c=4.23,
-                                 units=galactic)
-    frozen1 = {'c': 1.}
-    p1 = [1e6]
-
-    pot2 = gp.MilkyWayPotential()
-    frozen2 = {'bulge': {'m': 5e9, 'c': 1},
-               'disk': {'a': 3., 'b': 0.2},
-               'halo': {'r_s': 15.62},
-               'nucleus': {'m': 1.71e9, 'c': 0.07}}
-    p2 = [1.1e10, 5.8e11]
-
-    for pot, frozen, p in zip([pot1, pot2],
-                              [frozen1, frozen2],
-                              [p1, p2]):
-        pars_out, j = _unpack_potential_pars(pot, p, frozen=frozen)
-        assert j == len(p)
-        if isinstance(pot, gp.CompositePotential):
-            assert np.allclose(pars_out['disk']['m'], p[0])
-            assert np.allclose(pars_out['halo']['m'], p[1])
-        else:
-            assert np.allclose(pars_out['m'], p[0])
-
-        p_out = _pack_potential_pars(pot, pars_out, frozen=frozen)
-        for x, y in zip(p_out, p):
-            assert np.allclose(x, y)
-        assert len(p) == len(p_out)
+# def test_potential_pack():
+#     pot1 = gp.HernquistPotential(m=1e5*u.Msun,
+#                                  c=4.23,
+#                                  units=galactic)
+#     frozen1 = {'c': 1.}
+#     p1 = [1e6]
+#
+#     pot2 = gp.MilkyWayPotential()
+#     frozen2 = {'bulge': {'m': 5e9, 'c': 1},
+#                'disk': {'a': 3., 'b': 0.2},
+#                'halo': {'r_s': 15.62},
+#                'nucleus': {'m': 1.71e9, 'c': 0.07}}
+#     p2 = [1.1e10, 5.8e11]
+#
+#     for pot, frozen, p in zip([pot1, pot2],
+#                               [frozen1, frozen2],
+#                               [p1, p2]):
+#         pars_out, j = _unpack_potential_pars(pot, p, frozen=frozen)
+#         assert j == len(p)
+#         if isinstance(pot, gp.CompositePotential):
+#             assert np.allclose(pars_out['disk']['m'], p[0])
+#             assert np.allclose(pars_out['halo']['m'], p[1])
+#         else:
+#             assert np.allclose(pars_out['m'], p[0])
+#
+#         p_out = _pack_potential_pars(pot, pars_out, frozen=frozen)
+#         for x, y in zip(p_out, p):
+#             assert np.allclose(x, y)
+#         assert len(p) == len(p_out)
 
 
 def test_mockstreammodel_gd1():
@@ -75,19 +74,23 @@ def test_mockstreammodel_gd1():
     true_w0 = gd.PhaseSpacePosition(pos=[10, 0, 0.]*u.kpc,
                                     vel=[0, 200, 0.]*u.km/u.s)
     true_c = true_w0.to_coord_frame(gc.GD1Koposov10)
+
     pot = gp.HernquistPotential(m=2e11*u.Msun,
                                 c=5*u.kpc,
                                 units=galactic)
-
     data = get_fake_data(true_w0, gp.Hamiltonian(pot),
                          gc.GD1Koposov10, size=32)
+
+    class MockStreamModel(BaseMockStreamModel):
+        potential_cls = gp.HernquistPotential
+        potential_units = galactic
 
     model = MockStreamModel(data=data,
                             phi1_0=true_c.phi1,
                             stream_frame=gc.GD1Koposov10,
                             integrate_kw=dict(dt=-0.5, n_steps=2000),
-                            potential=pot,
-                            frozen={'potential': {'m': 2e11}},
+                            frozen={'potential': {'m': 2e11},
+                                    'sun': True},
                             mockstream_kw={'prog_mass': 5e4*u.Msun,
                                            'release_every': 1})
 
@@ -100,7 +103,8 @@ def test_mockstreammodel_gd1():
          'potential': {'c': 5}})
     pars2 = model.unpack_pars(pars)
 
-    w0 = model.get_w0(**pars2['w0'])
+    galcen_frame = model.get_galcen_frame(**pars2['sun'])
+    w0 = model.get_w0(galcen_frame, **pars2['w0'])
     H = model.get_hamiltonian(**pars2['potential'])
 
     orbit = model.get_orbit(H, w0)
@@ -111,7 +115,7 @@ def test_mockstreammodel_gd1():
     # import matplotlib.pyplot as plt
     # plt.show()
 
-    ll = model.tracks_ln_likelihood(stream)
+    ll = model.tracks_ln_likelihood(stream, galcen_frame)
     print(ll)
 
     ll2 = model.ln_likelihood(pars2)

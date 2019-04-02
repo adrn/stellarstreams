@@ -67,3 +67,22 @@ def get_stream_track(stream_c,
                                                      stds[k].statistic[mask])
 
     return mean_tracks, std_tracks
+
+
+def get_orbit_track(orbit_c,
+                    phi1_lim=[-180, 180]*u.deg,
+                    units=None):
+    """TODO: document this shit
+
+    Parameters
+    ----------
+    stream_c : `~astropy.coordinates.BaseCoordinateFrame` subclass instance
+    phi1_lim : `~astropy.units.Quantity` (optional)
+    phi1_binsize : `~astropy.units.Quantity` (optional)
+    units : `dict`
+
+    Returns
+    -------
+    mean_tracks : ``dict``
+    std_tracks : ``dict``
+    """
