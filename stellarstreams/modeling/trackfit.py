@@ -80,9 +80,10 @@ class BaseMockStreamModel(BaseStreamModel):
                             std_tracks[name](self._data['phi1'])**2)
             ll = ln_normal_ivar(mean_tracks[name](self._data['phi1']),
                                 self._data[name], ivar)
-            lls.append(ll[np.isfinite(ll)].sum())
+            ll[~np.isfinite(ll)] = np.nan
+            lls.append(ll)
 
-        return np.sum(lls)
+        return np.nansum(lls, axis=0)
 
     def ln_likelihood(self, pars):
         galcen_frame = self.get_galcen_frame(**pars['sun'])
