@@ -343,7 +343,7 @@ class BaseStreamModel:
     def potential_ln_prior(self, *_, **__):
         return 0.
 
-    def sun_ln_prior(self, *_, **_):
+    def sun_ln_prior(self, *_, **__):
         return 0.
 
     # Compute log posterior probability of the model stream
