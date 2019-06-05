@@ -10,7 +10,7 @@ from .track import get_orbit_track
 __all__ = ['OrbitFitModel']
 
 
-class OrbitFitModel(BaseStreamModel):
+class BaseOrbitFitModel(BaseStreamModel):
     """ TODO: document this shit
 
     Parameters
@@ -22,6 +22,7 @@ class OrbitFitModel(BaseStreamModel):
     potential_cls = None
     potential_units = None
 
+    # Unfortunately, this has to be copied into any subclass of BaseStreamModel
     def __init_subclass__(cls, **kwargs):
         for required in ('potential_cls', 'potential_units'):
             if not getattr(cls, required):

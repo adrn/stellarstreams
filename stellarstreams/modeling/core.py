@@ -158,7 +158,7 @@ class BaseStreamModel:
         if isinstance(potential_cls, dict):
             for k in sorted(potential_cls.keys()):
                 this_vals = self._pack_potential_pars(potential_cls[k],
-                                                      pars[k],
+                                                      pars.get(k, {}),
                                                       frozen[k],
                                                       fill_frozen=fill_frozen)
                 vals = np.concatenate((vals, this_vals))
@@ -173,8 +173,9 @@ class BaseStreamModel:
                     val = pars.get(name, None)
 
                 if val is None:
-                    raise ValueError("No value passed in for parameter {0}, "
-                                     "but it isn't frozen either!".format(name))
+                    continue
+                    # raise ValueError("No value passed in for parameter {0}, "
+                    #                  "but it isn't frozen either!".format(name))
 
                 vals.append(val)
 
@@ -184,7 +185,7 @@ class BaseStreamModel:
         vals = []
 
         # Initial conditions
-        if self.frozen.get('w0', False) is not True:
+        if self.frozen.get('w0', False) is not True: # Not frozen
             frozen_w0 = self.frozen.get('w0', dict())
             p_w0 = p.get('w0', dict())
             for k in self.param_names['w0']:
@@ -203,7 +204,7 @@ class BaseStreamModel:
 
         # Solar / LSR frame
         # TODO: bad code duplication here relative to the above
-        if self.frozen.get('sun', False) is not True:
+        if self.frozen.get('sun', False) is not True: # Not frozen
             frozen_sun = self.frozen.get('sun', dict())
             p_sun = p.get('sun', dict())
             for k in self.param_names['sun']:
@@ -221,7 +222,7 @@ class BaseStreamModel:
                     vals.append(val)
 
         # Potential
-        if self.frozen.get('potential', False) is not False: # potential params
+        if self.frozen.get('potential', False) is not True: # Not frozen
             pot_pars = copy.deepcopy(p['potential'])
             self.potential_transform(pot_pars)
             pot_vals = self._pack_potential_pars(self.potential_cls,
@@ -362,7 +363,7 @@ class BaseStreamModel:
         if not np.all(np.isfinite(ll)):
             return -np.inf
 
-        return ll + lp
+        return np.sum(ll) + lp
 
     def __call__(self, p):
         return self.ln_posterior(p)
