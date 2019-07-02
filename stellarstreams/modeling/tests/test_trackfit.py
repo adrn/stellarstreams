@@ -69,7 +69,7 @@ def get_fake_data(w0, H, fr, size=1):
 #         assert len(p) == len(p_out)
 
 
-def test_mockstreammodel_gd1():
+def test_mockstreammodel1():
     # Make some fake data:
     true_w0 = gd.PhaseSpacePosition(pos=[10, 0, 0.]*u.kpc,
                                     vel=[0, 200, 0.]*u.km/u.s)
@@ -101,6 +101,128 @@ def test_mockstreammodel_gd1():
                 'distance': true_c.distance.kpc,
                 'radial_velocity': true_c.radial_velocity.to_value(u.km/u.s)},
          'potential': {'c': 5}})
+    pars2 = model.unpack_pars(pars)
+
+    galcen_frame = model.get_galcen_frame(**pars2['sun'])
+    w0 = model.get_w0(galcen_frame, **pars2['w0'])
+    H = model.get_hamiltonian(**pars2['potential'])
+
+    orbit = model.get_orbit(H, w0)
+    # orbit.plot()
+
+    stream = model.get_mockstream(H, orbit[::-1])
+    # stream.plot()
+    # import matplotlib.pyplot as plt
+    # plt.show()
+
+    ll = model.tracks_ln_likelihood(stream, galcen_frame)
+    print(ll)
+
+    ll2 = model.ln_likelihood(pars2)
+    lp2 = model(pars)
+
+
+def test_mockstreammodel2():
+    # Make some fake data:
+    true_w0 = gd.PhaseSpacePosition(pos=[10, 0, 0.]*u.kpc,
+                                    vel=[0, 200, 0.]*u.km/u.s)
+    true_c = true_w0.to_coord_frame(gc.GD1Koposov10)
+
+    pot = gp.CCompositePotential()
+    pot['halo'] = gp.HernquistPotential(m=2e11*u.Msun,
+                                        c=5*u.kpc,
+                                        units=galactic)
+    pot['disk'] = gp.MiyamotoNagaiPotential(m=5e10*u.Msun,
+                                            a=2.5*u.kpc, b=250*u.kpc,
+                                            units=galactic)
+    data = get_fake_data(true_w0, gp.Hamiltonian(pot),
+                         gc.GD1Koposov10, size=32)
+
+    class MockStreamModel(BaseMockStreamModel):
+        potential_cls = {'halo': pot['halo'].__class__,
+                         'disk': pot['disk'].__class__}
+        potential_units = galactic
+
+    model = MockStreamModel(data=data,
+                            phi1_0=true_c.phi1,
+                            stream_frame=gc.GD1Koposov10,
+                            integrate_kw=dict(dt=-0.5, n_steps=2000),
+                            frozen={'potential': {'halo': {'m': 2e11},
+                                                  'disk': {'m': 5e10,
+                                                           'a': 2.5,
+                                                           'b': 0.25}},
+                                    'sun': True},
+                            mockstream_kw={'prog_mass': 5e4*u.Msun,
+                                           'release_every': 1})
+
+    pars = model.pack_pars(
+        {'w0': {'phi2': true_c.phi2.degree,
+                'pm_phi1_cosphi2': true_c.pm_phi1_cosphi2.value,
+                'pm_phi2': true_c.pm_phi2.value,
+                'distance': true_c.distance.kpc,
+                'radial_velocity': true_c.radial_velocity.to_value(u.km/u.s)},
+         'potential': {'halo': {'c': 5}}})
+    pars2 = model.unpack_pars(pars)
+
+    galcen_frame = model.get_galcen_frame(**pars2['sun'])
+    w0 = model.get_w0(galcen_frame, **pars2['w0'])
+    H = model.get_hamiltonian(**pars2['potential'])
+
+    orbit = model.get_orbit(H, w0)
+    # orbit.plot()
+
+    stream = model.get_mockstream(H, orbit[::-1])
+    # stream.plot()
+    # import matplotlib.pyplot as plt
+    # plt.show()
+
+    ll = model.tracks_ln_likelihood(stream, galcen_frame)
+    print(ll)
+
+    ll2 = model.ln_likelihood(pars2)
+    lp2 = model(pars)
+
+
+def test_mockstreammodel3():
+    # Make some fake data:
+    true_w0 = gd.PhaseSpacePosition(pos=[10, 0, 0.]*u.kpc,
+                                    vel=[0, 200, 0.]*u.km/u.s)
+    true_c = true_w0.to_coord_frame(gc.GD1Koposov10)
+
+    pot = gp.CCompositePotential()
+    pot['halo'] = gp.NFWPotential(m=2e11*u.Msun,
+                                  r_s=5*u.kpc,
+                                        units=galactic)
+    pot['disk'] = gp.MiyamotoNagaiPotential(m=5e10*u.Msun,
+                                            a=2.5*u.kpc, b=250*u.kpc,
+                                            units=galactic)
+    data = get_fake_data(true_w0, gp.Hamiltonian(pot),
+                         gc.GD1Koposov10, size=32)
+
+    class MockStreamModel(BaseMockStreamModel):
+        potential_cls = {'halo': pot['halo'].__class__,
+                         'disk': pot['disk'].__class__}
+        potential_units = galactic
+
+    model = MockStreamModel(data=data,
+                            phi1_0=true_c.phi1,
+                            stream_frame=gc.GD1Koposov10,
+                            integrate_kw=dict(dt=-0.5, n_steps=2000),
+                            frozen={'potential': {'halo': {'m': 2e11, 'r_s': 5.},
+                                                  'disk': {'m': 5e10,
+                                                           'a': 2.5,
+                                                           'b': 0.25}},
+                                    'sun': True},
+                            mockstream_kw={'prog_mass': 5e4*u.Msun,
+                                           'release_every': 1})
+
+    pars = model.pack_pars(
+        {'w0': {'phi2': true_c.phi2.degree,
+                'pm_phi1_cosphi2': true_c.pm_phi1_cosphi2.value,
+                'pm_phi2': true_c.pm_phi2.value,
+                'distance': true_c.distance.kpc,
+                'radial_velocity': true_c.radial_velocity.to_value(u.km/u.s)},
+         'potential': {}})
     pars2 = model.unpack_pars(pars)
 
     galcen_frame = model.get_galcen_frame(**pars2['sun'])

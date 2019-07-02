@@ -7,7 +7,7 @@ from .core import BaseStreamModel
 from .stats import ln_normal_ivar, get_ivar
 from .track import get_orbit_track
 
-__all__ = ['OrbitFitModel']
+__all__ = ['BaseOrbitFitModel']
 
 
 class BaseOrbitFitModel(BaseStreamModel):
@@ -35,23 +35,22 @@ class BaseOrbitFitModel(BaseStreamModel):
     def __init__(self, data, stream_frame,
                  integrate_kw,
                  frozen=None,
-                 galcen_frame=None,
                  phi1_0=0*u.deg,
                  phi1_lim=[-180, 180]*u.deg):
 
         super().__init__(data=data, stream_frame=stream_frame,
                          integrate_kw=integrate_kw, frozen=frozen,
-                         galcen_frame=galcen_frame, phi1_0=phi1_0,
-                         phi1_lim=phi1_lim)
+                         phi1_0=phi1_0, phi1_lim=phi1_lim)
 
         # TODO: do something about integrating forward and/or backward...
 
-    def orbit_ln_likelihood(self, orbit):
+    def orbit_ln_likelihood(self, orbit, galcen_frame):
         orbit_c = orbit.to_coord_frame(
-            self.stream_frame, galactocentric_frame=self.galcen_frame)
+            self.stream_frame, galactocentric_frame=galcen_frame)
 
         mean_tracks = get_orbit_track(orbit_c, phi1_lim=self.phi1_lim,
                                       units=self._data_units)
+        return orbit_c
 
         lls = []
         for name in self._frame_comp_names[1:]: # skip phi1
@@ -62,11 +61,12 @@ class BaseOrbitFitModel(BaseStreamModel):
         return np.sum(lls)
 
     def ln_likelihood(self, pars):
-        w0 = self.get_w0(**pars['w0'])
+        galcen_frame = self.get_galcen_frame(**pars.get('sun', {}))
+        w0 = self.get_w0(galcen_frame, **pars['w0'])
         H = self.get_hamiltonian(**pars['potential'])
 
         orbit = self.get_orbit(H, w0)
         if orbit is None:
             return -np.inf
 
-        return self.orbit_ln_likelihood(orbit)
+        return self.orbit_ln_likelihood(orbit, galcen_frame)

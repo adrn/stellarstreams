@@ -71,18 +71,55 @@ def get_stream_track(stream_c,
 
 def get_orbit_track(orbit_c,
                     phi1_lim=[-180, 180]*u.deg,
-                    units=None):
+                    units=None,
+                    **kwargs):
     """TODO: document this shit
 
     Parameters
     ----------
     stream_c : `~astropy.coordinates.BaseCoordinateFrame` subclass instance
     phi1_lim : `~astropy.units.Quantity` (optional)
-    phi1_binsize : `~astropy.units.Quantity` (optional)
     units : `dict`
+    **kwargs
+        Passed to ``InterpolatedUnivariateSpline``.
 
     Returns
     -------
     mean_tracks : ``dict``
-    std_tracks : ``dict``
     """
+
+    # All position and velocity component names:
+    component_names = (
+        list(orbit_c.get_representation_component_names().keys()) +
+        list(orbit_c.get_representation_component_names('s').keys()))
+
+    # If no units are provided:
+    if units is None:
+        units = dict()
+
+    units['phi1'] = units.get('phi1',
+                              getattr(orbit_c, component_names[0]).unit)
+
+    phi1 = orbit_c.spherical.lon.wrap_at(180*u.deg).to_value(units['phi1'])
+    phi1_lim = phi1_lim.to_value(units['phi1'])
+
+    phi1_mask = (phi1 > phi1_lim.min()) & (phi1 < phi1_lim.max())
+    print(phi1)
+    print(phi1_lim)
+    print(phi1_mask.sum())
+    phi1 = phi1[phi1_mask]
+    idx = phi1.argsort()
+
+    mean_tracks = dict()
+    for k in component_names[1:]:
+        val = getattr(orbit_c, k)[phi1_mask]
+        if k in units:
+            val = val.to_value(units[k])
+        else:
+            units[k] = val.unit
+            val = val.value
+
+        mean_tracks[k] = InterpolatedUnivariateSpline(phi1[idx], val[idx],
+                                                      **kwargs)
+
+    return mean_tracks

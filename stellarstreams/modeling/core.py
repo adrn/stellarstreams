@@ -256,7 +256,7 @@ class BaseStreamModel:
             frozen_sun = self.frozen.get('sun', dict())
             for name in self.param_names['sun']:
                 if name in frozen_sun:
-                    if fill_frozen and name in self.frozen:
+                    if fill_frozen:
                         sun_pars[name] = self.frozen[name]
                 else:
                     sun_pars[name] = x[j]
@@ -279,22 +279,31 @@ class BaseStreamModel:
 
     # Helper / convenience methods:
     def get_galcen_frame(self, **kwargs):
-        vx = kwargs.pop('vx_sun', _default_vx_sun.value) # TODO: units
-        vy = kwargs.pop('vy_sun', _default_vy_sun.value) # TODO: units
-        vz = kwargs.pop('vz_sun', _default_vz_sun.value) # TODO: units
+        if 'sun' in self.frozen and self.frozen['sun'] is not True:
+            frozen = self.frozen['sun']
+        else:
+            frozen = {}
 
-        kwargs['galcen_v_sun'] = coord.CartesianDifferential(
+        vx = kwargs.get('vx_sun', frozen.get('vx_sun', _default_vx_sun.value)) # TODO: units
+        vy = kwargs.get('vy_sun', frozen.get('vy_sun', _default_vy_sun.value))
+        vz = kwargs.get('vz_sun', frozen.get('vz_sun', _default_vz_sun.value))
+        print(vx, vy, vz)
+
+        galcen_kwargs = {}
+        galcen_kwargs['galcen_v_sun'] = coord.CartesianDifferential(
             [vx, vy, vz] * u.km/u.s) # TODO: assumed units
 
-        kwargs['galcen_distance'] = kwargs.pop(
+        default_dist = frozen.get(
             'galcen_distance',
-            _default_galcen_frame.galcen_distance.to_value(u.kpc)) * u.kpc # TODO: units
+            _default_galcen_frame.galcen_distance.to_value(u.kpc))
+        galcen_kwargs['galcen_distance'] = kwargs.get('galcen_distance',
+                                                      default_dist) * u.kpc # TODO: units
 
-        kwargs['z_sun'] = kwargs.pop(
-            'z_sun',
-            _default_galcen_frame.z_sun.to_value(u.pc)) * u.pc # TODO: units
+        default_zsun = frozen.get('z_sun',
+                                  _default_galcen_frame.z_sun.to_value(u.kpc))
+        galcen_kwargs['z_sun'] = kwargs.get('z_sun', default_zsun) * u.kpc # TODO: units
 
-        return coord.Galactocentric(**kwargs)
+        return coord.Galactocentric(**galcen_kwargs)
 
     def get_w0(self, galcen_frame, **kwargs):
         kw = dict()
