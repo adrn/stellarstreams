@@ -1,6 +1,7 @@
 # Built in
-from inspect import getfullargspec, isclass
+from inspect import isclass
 import copy
+from warnings import warn
 
 # Third-party
 import astropy.coordinates as coord
@@ -12,9 +13,6 @@ import gala.dynamics as gd
 from gala.integrate.timespec import parse_time_specification
 import gala.potential as gp
 from gala.units import galactic
-
-# Project
-from .stats import ln_normal
 
 __all__ = ['BaseStreamModel']
 
@@ -33,27 +31,47 @@ class BaseStreamModel:
     stream_frame : `~astropy.coordinates.BaseCoordinateFrame` subclass instance
     potential : `~gala.potential.PotentialBase` subclass instance
     """
-    potential_cls = None
-    potential_units = None
 
-    # TODO: units
-    @u.quantity_input(phi1_0=u.deg, phi1_lim=u.deg)
-    def __init__(self, data, stream_frame,
-                 integrate_kw,
-                 frozen=None,
-                 phi1_0=0*u.deg,
-                 phi1_lim=[-180, 180]*u.deg):
+    @u.quantity_input(lon0=u.deg, lon_bins=u.deg)
+    def __init__(self, data, stream_frame, potential,
+                 frozen=None, lon0=0*u.deg, lon_bins=None):
+        # TODO: document: 'lon' name because we are agnostic: this could be ICRS, or stream coordinates, or whatever. But the longitude frame component is always taken to be the independent variable
 
-        # Coordinate frame of the stream data
-        if not ((isclass(stream_frame) and
-                 issubclass(stream_frame, coord.BaseCoordinateFrame)) or
-                isinstance(stream_frame, coord.BaseCoordinateFrame)):
-            raise TypeError('Invalid stream frame: must either be an astropy '
-                            'frame class instance, or the class itself.')
+        # Validate the input data
+        # TODO: right now, the data must be sky position, distance (not
+        # distmod!), proper motions, and radial velocity, but we should also
+        # support distance modulus I suppose?
+        self.data = QTable(data, copy=False)  # keep the original data table
+        self._data = Table()  # a copy with units stripped
+        self._data_units = dict()
+        self._has_data = dict()  # what data was provided
+        for i, name in enumerate(self._frame_comp_names):
+            self._has_data[name] = name in self.data.colnames
 
-        if (isclass(stream_frame) and
-                issubclass(stream_frame, coord.BaseCoordinateFrame)):
-            stream_frame = stream_frame()
+            if self._has_data[name]:
+                self._data_units[name] = self.data[name].unit
+                self._data[name] = self.data[name].value
+
+                if i > 0:  # skip ivar for longitude component
+                    if name+'_ivar' not in self.data.colnames:
+                        warn("No uncertainties provided for component '{0}' - "
+                             "if you want to provide uncertainties, you must "
+                             "pass in inverse-variance values with name "
+                             "'{0}_ivar' in the input data table.".format(name),
+                             RuntimeWarning)
+                        self._data[name+'_ivar'] = np.zeros(len(self.data))
+                        continue
+
+                    # ensure the ivar values are in the same units as the data
+                    ivar_unit = 1 / self._data_units[name] ** 2
+                    self._data[name+'_ivar'] = \
+                        self.data[name+'_ivar'].to_value(ivar_unit)
+
+        # Ensure that the stream_frame is an instance
+        if not isinstance(stream_frame, coord.BaseCoordinateFrame):
+            raise TypeError('Invalid stream frame input: this must be an '
+                            'astropy frame class instance.')
+
         self.stream_frame = stream_frame
         self._frame_cls = stream_frame.__class__
         self._frame_comp_names = (
@@ -61,84 +79,63 @@ class BaseStreamModel:
             list(stream_frame.get_representation_component_names('s').keys()))
         self._frame_attrs = stream_frame.frame_attributes
 
-        # Validate the input data
-        # TODO: this is broken for distance/distmod...!
-        self.data = QTable(data, copy=False) # maintain the original data
-        self._data = Table() # a copy with units stripped
-        self._data_units = dict()
-        self._has_data = dict()
-        for i, name in enumerate(self._frame_comp_names):
-            self._has_data[name] = name in self.data.colnames
-            if (self._has_data[name] and i > 0 and
-                    name+'_ivar' not in self.data.colnames):
-                raise ValueError("If passing in data for component '{0}', you "
-                                 "must also pass in an inverse-variance with "
-                                 "name '{0}_ivar' in the input data table"
-                                 .format(name))
+        # units are auto-validated by quantity_input
+        self.lon0 = lon0
+        if lon_bins is None:
+            lon_bins = np.arange(-180, 180+1e-3, 1.) * u.deg  # default!
+        self.lon_bins = lon_bins
 
-            if self._has_data[name]:
-                self._data_units[name] = self.data[name].unit
-                self._data[name] = self.data[name].value
-
-                if i > 0: # skip phi1 or longitude
-                    ivar_unit = 1 / self._data_units[name]**2
-                    self._data[name+'_ivar'] = \
-                        self.data[name+'_ivar'].to_value(ivar_unit)
-
-        # Validate integrate_kw arguments
-        valid_integrate_args = getfullargspec(parse_time_specification).args
-        valid_name_kw = dict()
-        for k in integrate_kw:
-            if k in valid_integrate_args[1:]: # skip "units"
-                valid_name_kw[k] = integrate_kw[k]
-        try:
-            # note: this is just to validate, so galactic doesn't matter
-            parse_time_specification(units=galactic, **valid_name_kw)
-        except ValueError:
-            raise ValueError('Invalid orbit integration time information '
-                             'specified: you passed in "{}", but we need '
-                             'a full specification of the orbit time grid as '
-                             'required by '
-                             'gala.integrate.parse_time_specification'
-                             .format(integrate_kw))
-        self.integrate_kw = integrate_kw
-
-        # Auto-validated by quantity_input
-        self.phi1_0 = phi1_0
-        self.phi1_lim = phi1_lim
+        # strip units
+        lon_name = self._frame_comp_names[0]
+        self._lon0 = lon0.to_value(self._data_units[lon_name])
+        self._lon_bins = lon_bins.to_value(self._data_units[lon_name])
 
         # Frozen parameters:
         if frozen is None:
             frozen = dict()
         self.frozen = frozen
 
-        # Compile parameter names: progenitor initial conditions
+        # Compile all parameter names
         self.param_names = dict()
         self.param_names['w0'] = self._frame_comp_names[1:]
         self.param_names['sun'] = ['galcen_distance',
                                    'vx_sun', 'vy_sun', 'vz_sun',
                                    'z_sun']
 
-        self.param_names['potential'] = {}
-        if isinstance(self.potential_cls, dict):
-            for k in self.potential_cls.keys():
-                self.param_names['potential'][k] = sorted(list(
-                    self.potential_cls[k]._physical_types.keys()))
-        else:
-            self.param_names['potential'] = sorted(list(
-                self.potential_cls._physical_types.keys()))
+        # Deal with the input potential
+        # TODO: right now, it must be a composite potential
+        if not isinstance(potential, gp.CompositePotential):
+            raise ValueError("Invalid input for potential: This must be a "
+                             "potential class instance, not '{}'"
+                             .format(type(potential)))
 
-    def _unpack_potential_pars(self, potential_cls, p, frozen,
-                               fill_frozen=False):
+        self.potential = potential
+        self.param_names['potential'] = {}
+        ppars = {}
+        for k in sorted(potential.keys()):
+            ppars[k] = {}
+            for name, val in potential[k].parameters.items():
+                ppars[k][name] = val.decompose(potential.units).value
+            self.param_names['potential'][k] = sorted(list(ppars[k].keys()))
+        self._in_pot_params = ppars
+
+    def _unpack_potential_pars(self, p, frozen, fill_frozen=False):
         j = 0
         all_key_vals = dict()
 
-        if isinstance(potential_cls, dict):
-            for k in sorted(potential_cls.keys()):
-                this_key_vals, this_j = self._unpack_potential_pars(
-                    potential_cls[k], p[j:], frozen[k], fill_frozen)
-                all_key_vals[k] = this_key_vals
-                j += this_j
+        # TODO: make sure frozen['potential'] == True just uses the instance
+
+        for k in sorted(self.potential.keys()):
+            for name in self.potential[k].parameters.keys():
+                if frozen is True and fill_frozen:
+                    all_key_vals[name] = self._in_pot_params[k][name]
+                elif name in frozen and fill_frozen:
+                    all_key_vals[name] = frozen[k][name]
+
+            # TODO: left off here!
+
+            all_key_vals[k] = this_key_vals
+            j += this_j
 
         else:
             for name in sorted(potential_cls._physical_types.keys()):
@@ -337,7 +334,7 @@ class BaseStreamModel:
 
         return orbit
 
-    # To be overriden by the user:
+    # To be overridden by the user:
     def potential_transform(self, *args, **kwargs):
         pass
 
