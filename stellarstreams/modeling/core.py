@@ -1,4 +1,5 @@
 # Built in
+from abc import ABCMeta
 from inspect import isclass
 import copy
 from warnings import warn
@@ -22,7 +23,7 @@ _default_vy_sun = _default_galcen_frame.galcen_v_sun.d_y
 _default_vz_sun = _default_galcen_frame.galcen_v_sun.d_z
 
 
-class BaseStreamModel:
+class BaseStreamModel(BaseModel):
     """ TODO: document this shit
 
     Parameters
@@ -35,6 +36,8 @@ class BaseStreamModel:
     @u.quantity_input(lon0=u.deg, lon_bins=u.deg)
     def __init__(self, data, stream_frame, potential,
                  frozen=None, lon0=0*u.deg, lon_bins=None):
+        super().__init__()
+
         # TODO: document: 'lon' name because we are agnostic: this could be ICRS, or stream coordinates, or whatever. But the longitude frame component is always taken to be the independent variable
 
         # Validate the input data
@@ -70,7 +73,7 @@ class BaseStreamModel:
         # Ensure that the stream_frame is an instance
         if not isinstance(stream_frame, coord.BaseCoordinateFrame):
             raise TypeError('Invalid stream frame input: this must be an '
-                            'astropy frame class instance.')
+                            'astropy frame class *instance*.')
 
         self.stream_frame = stream_frame
         self._frame_cls = stream_frame.__class__
@@ -95,12 +98,15 @@ class BaseStreamModel:
             frozen = dict()
         self.frozen = frozen
 
-        # Compile all parameter names
-        self.param_names = dict()
-        self.param_names['w0'] = self._frame_comp_names[1:]
-        self.param_names['sun'] = ['galcen_distance',
-                                   'vx_sun', 'vy_sun', 'vz_sun',
-                                   'z_sun']
+        # TODO: allow also specifying transform functions here?
+        self.register_param_group('w0', param_names=self._frame_comp_names[1:],
+                                  ln_prior=self.w0_ln_prior)
+
+        self.register_param_group('sun',
+                                  param_names=['galcen_distance',
+                                               'vx_sun', 'vy_sun', 'vz_sun',
+                                               'z_sun'],
+                                  ln_prior=self.sun_ln_prior)
 
         # Deal with the input potential
         # TODO: right now, it must be a composite potential
@@ -110,81 +116,69 @@ class BaseStreamModel:
                              .format(type(potential)))
 
         self.potential = potential
-        self.param_names['potential'] = {}
+        _pot_param_names = {}
         ppars = {}
         for k in sorted(potential.keys()):
             ppars[k] = {}
             for name, val in potential[k].parameters.items():
                 ppars[k][name] = val.decompose(potential.units).value
-            self.param_names['potential'][k] = sorted(list(ppars[k].keys()))
+            _pot_param_names[k] = sorted(list(ppars[k].keys()))
         self._in_pot_params = ppars
+
+        self.register_param_group(
+            'potential', param_names=_pot_param_names,
+            ln_prior=self.potential_ln_prior,
+            pack_func=self._pack_potential_pars,
+            unpack_finc=self._unpack_potential_pars,
+            transform_func=self.potential_transform,
+            inv_transform_func=self.potential_transform_inv)
 
     def _unpack_potential_pars(self, p, frozen, fill_frozen=False):
         j = 0
-        all_key_vals = dict()
+        key_vals = {}
 
-        # TODO: make sure frozen['potential'] == True just uses the instance
+        if frozen is True:
+            # Potential is completely frozen, so use the inputted parameters
+            return self._in_pot_params, 0
 
         for k in sorted(self.potential.keys()):
-            for name in self.potential[k].parameters.keys():
-                if frozen is True and fill_frozen:
-                    all_key_vals[name] = self._in_pot_params[k][name]
-                elif name in frozen and fill_frozen:
-                    all_key_vals[name] = frozen[k][name]
-
-            # TODO: left off here!
-
-            all_key_vals[k] = this_key_vals
-            j += this_j
-
-        else:
-            for name in sorted(potential_cls._physical_types.keys()):
-                if name in frozen:
-                    if fill_frozen:
-                        all_key_vals[name] = frozen[name]
+            key_vals[k] = {}
+            for name in sorted(self.potential[k].parameters.keys()):
+                if name in frozen and fill_frozen:
+                    key_vals[k][name] = frozen[k].get(
+                        name, self._in_pot_params[k][name])
                 else:
-                    all_key_vals[name] = p[j]
+                    key_vals[k][name] = p[j]
                     j += 1
 
-        return all_key_vals, j
+        return key_vals, j
 
-    def _pack_potential_pars(self, potential_cls, pars, frozen,
-                             fill_frozen=False):
+    def _pack_potential_pars(self, pars, frozen, fill_frozen=False):
         vals = []
 
-        if isinstance(potential_cls, dict):
-            for k in sorted(potential_cls.keys()):
-                this_vals = self._pack_potential_pars(potential_cls[k],
-                                                      pars.get(k, {}),
-                                                      frozen[k],
-                                                      fill_frozen=fill_frozen)
-                vals = np.concatenate((vals, this_vals))
+        if frozen is True and not fill_frozen:
+            # Potential is completely frozen and not filling frozen par vals
+            return np.array(vals)
 
-        else:
-            for name in sorted(potential_cls._physical_types.keys()):
-                if name in frozen:
-                    val = frozen.get(name, None)
+        for k in sorted(self.potential.keys()):
+            for name in sorted(self.potential[k].parameters.keys()):
+                if name in frozen.get(k, {}):
+                    val = frozen[k][name]
                     if not fill_frozen:
                         continue
                 else:
-                    val = pars.get(name, None)
-
-                if val is None:
-                    continue
-                    # raise ValueError("No value passed in for parameter {0}, "
-                    #                  "but it isn't frozen either!".format(name))
-
+                    val = pars[k][name]
                 vals.append(val)
 
         return np.array(vals)
 
-    def pack_pars(self, p, fill_frozen=True):
+    def pack_pars(self, p, fill_frozen=False):
         vals = []
 
-        # Initial conditions
-        if self.frozen.get('w0', False) is not True: # Not frozen
-            frozen_w0 = self.frozen.get('w0', dict())
-            p_w0 = p.get('w0', dict())
+        # Progenitor orbit initial conditions
+        if self.frozen.get('w0', False) is not True:
+            frozen_w0 = self.frozen.get('w0', dict())  # frozen values
+            p_w0 = p.get('w0', dict())  # values passed in via `p['w0']`
             for k in self.param_names['w0']:
                 if k in frozen_w0:
                     val = frozen_w0.get(k, None)
@@ -199,11 +193,11 @@ class BaseStreamModel:
                                      "but it isn't frozen either!".format(k))
                 vals.append(val)
 
-        # Solar / LSR frame
-        # TODO: bad code duplication here relative to the above
-        if self.frozen.get('sun', False) is not True: # Not frozen
-            frozen_sun = self.frozen.get('sun', dict())
-            p_sun = p.get('sun', dict())
+        # Solar / LSR reference frame
+        # TODO: code duplication here relative to the above
+        if self.frozen.get('sun', False) is not True:
+            frozen_sun = self.frozen.get('sun', dict())  # frozen values
+            p_sun = p.get('sun', dict())  # values passed in via `p['sun']`
             for k in self.param_names['sun']:
                 if k in frozen_sun:
                     val = frozen_sun.get(k, None)
@@ -219,13 +213,12 @@ class BaseStreamModel:
                     vals.append(val)
 
         # Potential
-        if self.frozen.get('potential', False) is not True: # Not frozen
+        if self.frozen.get('potential', False) is not True:
             pot_pars = copy.deepcopy(p['potential'])
             self.potential_transform(pot_pars)
-            pot_vals = self._pack_potential_pars(self.potential_cls,
-                                                 pot_pars,
-                                                 self.frozen['potential'],
-                                                 fill_frozen=fill_frozen)
+            pot_vals = self._pack_potential_pars(
+                pot_pars, self.frozen.get('potential', {}),
+                fill_frozen=fill_frozen)
 
             vals = np.concatenate((vals, pot_vals))
 
@@ -237,7 +230,7 @@ class BaseStreamModel:
         j = 0
 
         w0_pars = dict()
-        if self.frozen.get('w0', False) is not True: # initial conditions
+        if self.frozen.get('w0', False) is not True:
             frozen_w0 = self.frozen.get('w0', dict())
             for name in self.param_names['w0']:
                 if name in frozen_w0:
@@ -261,7 +254,7 @@ class BaseStreamModel:
         pars['sun'] = sun_pars
 
         pot_pars = dict()
-        if self.frozen.get('potential', False) is not True: # potential params
+        if self.frozen.get('potential', False) is not True:  # potential params
             pot_pars, j = self._unpack_potential_pars(self.potential_cls,
                                                       x[j:],
                                                       self.frozen['potential'],
@@ -281,20 +274,20 @@ class BaseStreamModel:
         else:
             frozen = {}
 
-        vx = kwargs.get('vx_sun', frozen.get('vx_sun', _default_vx_sun.value)) # TODO: units
+        vx = kwargs.get('vx_sun', frozen.get('vx_sun', _default_vx_sun.value))
         vy = kwargs.get('vy_sun', frozen.get('vy_sun', _default_vy_sun.value))
         vz = kwargs.get('vz_sun', frozen.get('vz_sun', _default_vz_sun.value))
         print(vx, vy, vz)
 
         galcen_kwargs = {}
         galcen_kwargs['galcen_v_sun'] = coord.CartesianDifferential(
-            [vx, vy, vz] * u.km/u.s) # TODO: assumed units
+            [vx, vy, vz] * u.km/u.s)  # TODO: assumed units
 
         default_dist = frozen.get(
             'galcen_distance',
             _default_galcen_frame.galcen_distance.to_value(u.kpc))
         galcen_kwargs['galcen_distance'] = kwargs.get('galcen_distance',
-                                                      default_dist) * u.kpc # TODO: units
+                                                      default_dist) * u.kpc  # TODO: units
 
         default_zsun = frozen.get('z_sun',
                                   _default_galcen_frame.z_sun.to_value(u.kpc))
@@ -349,27 +342,3 @@ class BaseStreamModel:
 
     def sun_ln_prior(self, *_, **__):
         return 0.
-
-    # Compute log posterior probability of the model stream
-    def ln_prior(self, pars):
-        lp = 0.
-        lp += self.w0_ln_prior(pars['w0'])
-        lp += self.potential_ln_prior(pars['potential'])
-        lp += self.sun_ln_prior(pars['sun'])
-        return lp
-
-    def ln_posterior(self, p):
-        pars = self.unpack_pars(p)
-
-        lp = self.ln_prior(pars)
-        if not np.all(np.isfinite(lp)):
-            return -np.inf
-
-        ll = self.ln_likelihood(pars)
-        if not np.all(np.isfinite(ll)):
-            return -np.inf
-
-        return np.sum(ll) + lp
-
-    def __call__(self, p):
-        return self.ln_posterior(p)
